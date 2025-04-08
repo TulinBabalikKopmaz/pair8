@@ -1,0 +1,14 @@
+version: '3.4'
+
+services:
+  pair8:
+    image: pair8
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    ports:
+      - 8000:8000
+    volumes:
+      - .:/app # Bu satır EKSİKSE .pkl dosyaları dışarı çıkmaz
+    env_file:
+      - .env
