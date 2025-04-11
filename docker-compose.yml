@@ -1,14 +1,58 @@
-version: '3.4'
+# docker-compose.yml: Bu dosya, birden fazla Docker servisini tanımlayıp yönetmek için kullanılır.
+# Örneğin: bir FastAPI uygulaması, veritabanı ve cache sistemi gibi bileşenleri tek komutla ayağa kaldırmanı sağlar.
+# Bu yapı, uygulamanı kolayca başlatmak, test etmek ve dağıtmak için büyük kolaylık sağlar.
+
+# ------------------------------------------------------------------------------
+# Kavramlar:
+
+# Docker Image (İmaj) nedir?
+# Bir uygulamanın çalışması için gereken her şeyi (kod, bağımlılıklar, ortam ayarları) içeren bir sabit şablondur.
+# Yani bu bir "şablon" gibidir. İmajdan istediğin kadar konteyner oluşturabilirsin.
+# Örnek: "pair8" adında bir imaj, içinde FastAPI + model dosyaları + kütüphaneler barındırabilir.
+#
+
+# Docker Container (Konteyner) nedir?
+# İmajdan oluşturulmuş, çalışan bir birimdir. Gerçek uygulama burada çalışır.
+# Hafif ve izole bir ortam sağlar. Her konteyner, kendi dosya sistemi ve ağıyla çalışır.
+# Konteyner = Canlı çalışan sistem. İmaj = O sistemi oluşturan tarif.
+
+# Örnek benzetme:
+#Docker image’ı değiştirilemez (read-only) bir yapıdadır.
+#Bu image’tan container (çalışan canlı ortam) oluşturulur.
+
+#Image = Tarif defteri 
+#Container = Pişmiş yemek 
+
+# Dockerfile aslında bir image tarifidir
+
+version: '3.4' # Docker Compose dosyasının sürümünü belirtir. 3.4 sürümü, modern Docker sürümleriyle uyumludur.
 
 services:
+  # Uygulamanın bileşenlerini (servislerini) tanımladığımız ana blok. Her servis bir konteynerdir.
+
   pair8:
-    image: pair8
+    # Bu, servisimizin adı. Örneğin: FastAPI ile geliştirdiğin "Satış Tahmini" uygulaması.
+    image: pair8 # Docker imajının adı. Eğer build yapılırsa, bu isimle imaj oluşturulur.
+
     build:
-      context: .
-      dockerfile: ./Dockerfile
+      # Eğer yerel olarak bir Dockerfile ile imaj oluşturulacaksa, build ayarları buraya yazılır.
+      context: . # Build işlemi için kök dizin. Yani Dockerfile’ın bulunduğu yer (geçerli dizin).
+      dockerfile: ./Dockerfile # Hangi Dockerfile kullanılacağını belirtir.
+
     ports:
       - 8000:8000
+        # Host makinedeki 8000 portunu, konteynerin içindeki 8000 portuna yönlendirir.
+        # Böylece http://localhost:8000 üzerinden uygulamaya erişilebilir.
+
     volumes:
-      - .:/app # Bu satır EKSİKSE .pkl dosyaları dışarı çıkmaz
+      - .:/app
+        # Volume eşlemesi: Host’taki geçerli dizin (.) konteyner içindeki /app dizinine bağlanır.
+        # Bu sayede:
+        # - Kodlar dışarıdan düzenlenebilir, uygulamayı yeniden build etmeye gerek kalmaz,
+        # - .pkl gibi model dosyalarına konteyner içinden doğrudan erişilir,
+        # - Veri kalıcılığı sağlanır: konteyner silinse bile veriler host’ta kalır.
+
     env_file:
       - .env
+        # Ortam değişkenlerini (örneğin veritabanı URL’si, API anahtarları) içeren .env dosyasını yükler.
+        # Kod içinde os.getenv() ile bu değerlere erişebilirsin.

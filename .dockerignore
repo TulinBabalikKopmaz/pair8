@@ -1,27 +1,44 @@
-**/__pycache__
-**/.venv
+# Docker image oluşturulurken (build edilirken) hangi dosya ve klasörlerin konteynere kopyalanmaması gerektiğini belirler.
+
+# Python önbellek ve sanal ortam klasörleri
+**/__pycache__          # Python bytecode dosyaları
+**/.venv                # Sanal ortam klasörü
+
+# Projeye özel yapılandırma ve meta dosyaları
 **/.classpath
-**/.dockerignore
-**/.env
-**/.git
+**/.dockerignore        # Bu dosyanın kendisi gereksiz
+**/.env                 # Ortam değişkenleri içeren hassas dosya
+**/.git                 # Git geçmişi ve konfigürasyon klasörü
 **/.gitignore
 **/.project
 **/.settings
 **/.toolstarget
-**/.vs
-**/.vscode
+**/.vs                  # Visual Studio dosyaları
+**/.vscode              # VS Code klasörü
+
+# .NET projelerinde oluşan kullanıcı ve meta dosyaları
 **/*.*proj.user
 **/*.dbmdl
 **/*.jfm
+
+# Derlenmiş binary klasörleri
 **/bin
+**/obj
+
+# Helm veya Kubernetes chart dosyaları
 **/charts
+**/secrets.dev.yaml
+**/values.dev.yaml
+
+# Docker & Compose dosyaları (içeriye kopyalanmasına gerek olmayanlar)
 **/docker-compose*
 **/compose*
 **/Dockerfile*
-**/node_modules
-**/npm-debug.log
-**/obj
-**/secrets.dev.yaml
-**/values.dev.yaml
+
+# Node.js projelerinde oluşan klasör ve hata logları
+**/node_modules         # Çok büyük klasör, dışarıda tutulmalı
+**/npm-debug.log        # Hata kayıt dosyası
+
+# Dokümantasyon
 LICENSE
 README.md

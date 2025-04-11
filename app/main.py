@@ -1,105 +1,123 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import joblib
-import numpy as np
-import pandas as pd
-from sqlalchemy import create_engine
-from dotenv import load_dotenv
-import os
+from fastapi import FastAPI, HTTPException           # FastAPI uygulaması ve hata yönetimi için
+from pydantic import BaseModel, Field                # Veri doğrulama ve Swagger açıklamaları için
+import joblib                                        # Eğitimli modeli .pkl dosyasından yüklemek için
+import numpy as np                                   # Sayısal hesaplama işlemleri için
+import pandas as pd                                  # Veri analizi ve veritabanı işlemleri için
+from sqlalchemy import create_engine                 # SQL veritabanı bağlantısı kurmak için
+from dotenv import load_dotenv                       # Ortam değişkenlerini .env dosyasından çekmek için
+import os                                            # Ortam değişkenlerini okumak için kullanılır
 
-app = FastAPI(title="Satış Tahmini API", version="2.0")
+# FastAPI uygulaması başlatılır
+app = FastAPI(title="Satış Tahmini API", version="1.0")
 
-# Model ve veri yükleme
+# Eğitimli model dosyası yüklenir
 try:
-    model = joblib.load("sales_model.pkl")
-    product_code_map = joblib.load("product_code_map.pkl")
+    model = joblib.load("rf_model.pkl")
 except Exception as e:
-    raise RuntimeError("Model veya eşleme dosyası yüklenemedi: " + str(e))
+    raise RuntimeError("Model yüklenemedi: " + str(e))
 
+# Ortam değişkenleri yüklenir ve veritabanına bağlantı kurulur
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
-
 engine = create_engine(DATABASE_URL)
 
+# API'den gelecek veri yapısı tanımlanır
 class PredictionInput(BaseModel):
-    product_id: int
-    unit_price: float
-    order_date: str  # YYYY-MM-DD
+    product_id: int = Field(..., description="Tahmin yapılacak ürünün ID'si. Veritabanındaki product_id ile eşleşmelidir.")
+    unit_price: float = Field(..., description="Ürünün satış birim fiyatı. Tahmin girişinde kullanılır.")
+    quantity: int = Field(..., description="Sipariş edilen ürün miktarı.")
+    order_date: str = Field(..., description="Sipariş tarihi. Format: YYYY-MM-DD (örnek: 2024-12-31)")
 
-@app.post("/predict", tags=["Tahmin"])
+# Tahmin yapılacak endpoint
+@app.post("/predict", tags=["Satış Tahmini"])
 def predict(input: PredictionInput):
+    # Tarih formatı kontrol edilir ve datetime formatına dönüştürülür
     try:
         order_date = pd.to_datetime(input.order_date)
     except Exception:
-        raise HTTPException(status_code=400, detail="Geçersiz tarih formatı. YYYY-MM-DD kullanın.")
+        raise HTTPException(status_code=400, detail="Tarih formatı hatalı. YYYY-MM-DD kullanın.")
 
-    prev_month = (order_date - pd.DateOffset(months=1)).strftime('%Y-%m')
-    order_month_num = int(order_date.strftime('%Y%m'))
-    month_only = order_date.month
+    # order_date'ten otomatik olarak tarih bileşenleri çıkarılır (kullanıcıdan ayrı olarak gelir)
+    month = order_date.month
+    year = order_date.year
+    day_of_week = order_date.dayofweek  # Pazartesi = 0, Pazar = 6
 
-    # Ürün adı bul
-    try:
-        product_query = f"SELECT product_name FROM products WHERE product_id = {input.product_id}"
-        product_result = pd.read_sql(product_query, engine)
-        if product_result.empty:
-            raise HTTPException(status_code=404, detail="Ürün bulunamadı.")
-        product_name = product_result['product_name'].iloc[0]
-        if product_name not in product_code_map:
-            raise HTTPException(status_code=400, detail="Ürün eğitim verisinde yok.")
-        product_code = product_code_map[product_name]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ürün kodu belirlenirken hata: {str(e)}")
-
-    # Önceki ay satış
-    try:
-        prev_q = f"""
-            SELECT SUM(od.quantity) AS prev_month_sales
-            FROM order_details od
-            JOIN orders o ON od.order_id = o.order_id
-            WHERE od.product_id = {input.product_id}
-            AND TO_CHAR(o.order_date, 'YYYY-MM') = '{prev_month}'
-        """
-        prev_df = pd.read_sql(prev_q, engine)
-        if prev_df.empty or prev_df['prev_month_sales'].isnull().all():
-            prev_month_sales = 0
+    # Mevsim bilgisi ay verisinden hesaplanır, kullanıcıdan gönderilmez
+    def get_season(month):
+        if month in [3, 4, 5]:
+            return 1  # İlkbahar
+        elif month in [6, 7, 8]:
+            return 2  # Yaz
+        elif month in [9, 10, 11]:
+            return 3  # Sonbahar
         else:
-            prev_month_sales = prev_df['prev_month_sales'].fillna(0).iloc[0]
-    except:
-        prev_month_sales = 0
+            return 4  # Kış
 
-    # Rolling 3 aylık ortalama
+    season = get_season(month)
+
+    # Ürün adı ve ülke bilgisi veritabanından çekilir, kullanıcı yalnızca product_id gönderir
     try:
-        roll_q = f"""
-            SELECT TO_CHAR(o.order_date, 'YYYY-MM') AS order_month, SUM(od.quantity) AS quantity
-            FROM order_details od
+        query = f"""
+            SELECT p.product_name, c.country
+            FROM products p
+            JOIN order_details od ON p.product_id = od.product_id
             JOIN orders o ON od.order_id = o.order_id
-            WHERE od.product_id = {input.product_id}
-            AND o.order_date < '{order_date.strftime('%Y-%m-%d')}'
-            GROUP BY order_month
-            ORDER BY order_month DESC
-            LIMIT 3
+            JOIN customers c ON o.customer_id = c.customer_id
+            WHERE p.product_id = {input.product_id}
+            ORDER BY o.order_date DESC
+            LIMIT 1
         """
-        roll_df = pd.read_sql(roll_q, engine)
-        sales_rolling_3 = roll_df['quantity'].mean() if not roll_df.empty else 0
-    except:
-        sales_rolling_3 = 0
+        result = pd.read_sql(query, engine)
 
-    # Özellik vektörü
+        # Eğer ürün daha önce sipariş edilmemişse hata döndürülür
+        if result.empty:
+            raise HTTPException(status_code=404, detail="Ürün verisi bulunamadı.")
+
+        row = result.iloc[0]
+
+        # Aşağıdaki değişkenler veritabanından gelen değerlere göre otomatik oluşturulur
+        product_code = int(pd.Series(row['product_name']).astype("category").cat.codes[0])  # Ürün adı kategorik koda çevrilir
+        country_code = int(pd.Series(row['country']).astype("category").cat.codes[0])       # Ülke adı kategorik koda çevrilir
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Veri çekilirken hata: {str(e)}")
+
+    # Ortalama fiyat şimdilik input'tan alınır, ama ileride veritabanından da hesaplanabilir
+    avg_price = input.unit_price
+
+    # Özellik vektörü oluşturulur, sırayla modelle uyumlu olacak şekilde hazırlanır
+    # scikit-learn modelleri girdi olarak 2 boyutlu array bekler
+    # Burada sadece 1 örnek verdiğimiz için dıştaki [[...]] şeklinde tek bir satırlık matris oluşturuyoruz.
+    features = np.array([[ 
+        month,             # Siparişin verildiği ay (1-12) → Mevsimsel etkileri öğrenmek için
+        year,              # Sipariş yılı (örneğin: 2025) → Zamanla artan veya azalan trendleri öğrenmek için
+        day_of_week,       # Haftanın günü (0 = Pazartesi, 6 = Pazar) → Hangi gün daha çok satış yapılıyor?
+        season,            # Ay bilgisine göre belirlenen mevsim (1 = İlkbahar, 2 = Yaz, 3 = Sonbahar, 4 = Kış)
+        country_code,      # Siparişin gönderildiği ülkenin kategorik kodu (ülke ismi → sayısal koda çevrildi)
+        product_code,      # Ürünün adı üzerinden oluşturulan kategorik kod (modelin metinle uğraşmasına gerek kalmaz)
+        input.quantity,    # Sipariş edilen ürün miktarı (girdi olarak kullanıcıdan gelir)
+        input.unit_price,  # Ürünün birim fiyatı (girdi olarak kullanıcıdan gelir)
+        avg_price          # Ortalama fiyat (şu an sabit olarak input.unit_price, ileride ürünün genel ortalaması alınabilir)
+    ]])
+
+    # Model kullanılarak tahmin yapılır
     try:
-        data = np.array([[order_month_num, product_code, input.unit_price,
-                          month_only, prev_month_sales, sales_rolling_3]])
-        prediction = model.predict(data)[0]
+        prediction = model.predict(features)[0]
+        # Bu çıktı, her örnek için 1 tahmin değeri içerir.
+        # Biz sadece 1 örnek gönderdiğimiz için sonuç: 1 elemanlı array
+        # Bu, dönen array’den ilk ve tek tahmin değerini alır.       
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Tahmin hatası: {str(e)}")
 
+    # Tahmin ve özet bilgiler API yanıtı olarak döndürülür
     return {
-        "tahmin_edilen_satis_miktari": round(prediction, 2),
-        "kullanilan_veri": {
-            "order_month_num": order_month_num,
-            "product_code": int(product_code),
+        "tahmin_edilen_satis_tutari": round(float(prediction), 2),
+        "girdi_ozeti": {
+            "product_id": input.product_id,
             "unit_price": input.unit_price,
-            "month_only": month_only,
-            "prev_month_sales": prev_month_sales,
-            "sales_rolling_3": round(sales_rolling_3, 2)
+            "quantity": input.quantity,
+            "order_date": input.order_date,
+            "season": season,               # Koddan otomatik üretildi
+            "country_code": country_code,   # Veritabanından geldi
+            "product_code": product_code    # Veritabanından geldi
         }
     }
